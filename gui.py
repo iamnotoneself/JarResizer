@@ -392,23 +392,26 @@ class Card(tk.Frame):
 
     def _draw(self):
         c = self.canvas
-        c.delete("all")
+        # 只删装饰层（卡片底/标题药丸），绝不能删 body 的窗口 item
+        c.delete("chrome")
         w = c.winfo_width()
         h = max(self._h, c.winfo_height())
         if w <= 1:
             return
         _rounded(c, 1, 1, w - 2, h - 2, self.R,
-                 fill=CARD_BG, outline=CARD_EDGE, width=1)
+                 fill=CARD_BG, outline=CARD_EDGE, width=1,
+                 tags="chrome")
         if self._title:
             f = tkfont.Font(family="Microsoft YaHei UI", size=9,
                             weight="bold")
             tw = f.measure(self._title)
             x0, y0 = self.PADX, self.TPAD - 2
             _rounded(c, x0, y0, x0 + tw + 22, y0 + self.TITLE_H,
-                     self.TITLE_H / 2.0, fill=ACCENT, outline="")
+                     self.TITLE_H / 2.0, fill=ACCENT, outline="",
+                     tags="chrome")
             c.create_text(x0 + 11, y0 + self.TITLE_H / 2.0,
                           text=self._title, fill="#ffffff", font=f,
-                          anchor="w")
+                          anchor="w", tags="chrome")
 
 
 class App(tk.Tk):

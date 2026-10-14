@@ -1,14 +1,40 @@
 # -*- coding: utf-8 -*-
-"""J2ME JAR -> BlackBerry 9930 移植工具 - tkinter GUI"""
+"""J2ME JAR -> BlackBerry 9930 移植工具 - tkinter GUI（药丸圆角风格）"""
 import os
 import queue
 import sys
 import threading
 import tkinter as tk
 import traceback
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import resizer as R
+
+# ------------------------------------------------------------ 主题配色
+PAGE_BG = "#eef1f6"      # 页面底色（浅灰蓝）
+CARD_BG = "#ffffff"      # 功能卡片底色（与页面低对比）
+CARD_EDGE = "#dde4ef"    # 卡片描边
+INK = "#2b3244"          # 正文
+SUB = "#7a8496"          # 提示文字
+ACCENT = "#3f6ad8"       # 主色（标题药丸 / 主按钮）
+ACCENT_HV = "#3560c6"    # 主色悬停
+OK_FG = "#1b7e2a"
+WARN_FG = "#b06a00"
+BAD_FG = "#c62f2f"
+
+FONT = ("Microsoft YaHei UI", 9)
+FONT_BOLD = ("Microsoft YaHei UI", 9, "bold")
+FONT_H2 = ("Microsoft YaHei UI", 10, "bold")
+FONT_SMALL = ("Microsoft YaHei UI", 8)
+
+
+def _rounded(cv, x1, y1, x2, y2, r, **kw):
+    """在 canvas 上画圆角矩形（polygon + smooth）。"""
+    r = max(2, min(r, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+           x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+           x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return cv.create_polygon(pts, smooth=True, **kw)
 
 
 def _excepthook(etype, value, tb):
@@ -97,15 +123,20 @@ def parse_preset(text):
     return int(parts[0]), int(parts[1])
 
 
-class _FlowFrame(ttk.Frame):
+class _FlowFrame(tk.Frame):
     """按可用宽度自动换行排列子控件的容器。
 
     子控件以本 Frame 为父创建后不要再调用 pack/grid，布局由
     <Configure> 驱动（窗口拉到多窄都不会被裁切，只会折行变高）。
     """
 
-    def __init__(self, master, gapx=8, gapy=4, **kw):
-        super().__init__(master, **kw)
+    def __init__(self, master, gapx=8, gapy=4, bg=None, **kw):
+        if bg is None:
+            try:
+                bg = master.cget("bg")
+            except Exception:
+                bg = CARD_BG
+        super().__init__(master, bg=bg, highlightthickness=0, **kw)
         self.gapx = gapx
         self.gapy = gapy
         self._height = 1
@@ -156,7 +187,7 @@ class _FlowFrame(ttk.Frame):
             self.configure(height=total)
 
 
-class _ScrollFrame(ttk.Frame):
+class _ScrollFrame(tk.Frame):
     """纵向可滚动容器。
 
     - body 宽度始终等于可视区宽度，fill="x"/sticky="ew" 正常生效；
@@ -168,15 +199,15 @@ class _ScrollFrame(ttk.Frame):
     """
 
     def __init__(self, master, **kw):
-        super().__init__(master, **kw)
-        bg = ttk.Style().lookup("TFrame", "background") or "#f0f0f0"
-        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=bg)
+        super().__init__(master, bg=PAGE_BG, **kw)
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0,
+                                bg=PAGE_BG)
         self.vsb = ttk.Scrollbar(self, orient="vertical",
                                  command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vsb.set)
         self.vsb.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.body = ttk.Frame(self.canvas)
+        self.body = tk.Frame(self.canvas, bg=PAGE_BG)
         self._win = self.canvas.create_window(
             (0, 0), window=self.body, anchor="nw")
         self.body.bind("<Configure>", self._sync_region)
@@ -212,11 +243,180 @@ class _ScrollFrame(ttk.Frame):
         self.canvas.yview_scroll(int(-e.delta / 120) * 3, "units")
 
 
+class PillButton(tk.Canvas):
+    """胶囊形（药丸）按钮：圆角 = 高度一半，自绘底色/描边/悬停效果。
+
+    兼容旧代码需要的接口：configure(text=…/state=…/command=…)、
+    cget("state")。kind: default/primary/danger/soft。
+    """
+
+    _STYLE = {
+        # kind: (fill, hover_fill, outline, fg)
+        "default": ("#ffffff", "#eef2f9", "#c7d1e2", INK),
+        "primary": (ACCENT, ACCENT_HV, "", "#ffffff"),
+        "danger": ("#fdecea", "#f9d9d5", "#f0c4be", "#bf3a30"),
+        "soft": ("#eaeef7", "#dfe6f3", "", "#41527a"),
+    }
+
+    def __init__(self, master, text="", command=None, kind="default",
+                 padx=14, pady=6, **kw):
+        self._kind = kind if kind in self._STYLE else "default"
+        self._text = text
+        self._command = command
+        self._state = "normal"
+        self._hover = False
+        self._padx = padx
+        self._pady = pady
+        bg = CARD_BG
+        try:
+            bg = master.cget("bg")
+        except Exception:
+            pass
+        super().__init__(master, highlightthickness=0, bd=0, bg=bg, **kw)
+        self._font = tkfont.Font(
+            family="Microsoft YaHei UI",
+            size=10 if kind == "primary" else 9,
+            weight="bold" if kind == "primary" else "normal")
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", lambda _e: self._set_hover(True))
+        self.bind("<Leave>", lambda _e: self._set_hover(False))
+        self._draw()
+
+    # ------------------------------------------------------------ 外观
+    def _colors(self):
+        fill, hover, outline, fg = self._STYLE[self._kind]
+        if self._state == "disabled":
+            if self._kind == "primary":
+                return "#b9c6ea", "", "#eef2fb"
+            return "#e9edf4", "#e2e8f1", "#a0a9ba"
+        return (hover if self._hover else fill), outline, fg
+
+    def _draw(self):
+        tw = self._font.measure(self._text)
+        h = self._font.metrics("linespace") + 2 * self._pady
+        w = tw + 2 * self._padx
+        self.configure(width=w, height=h,
+                       cursor="hand2" if self._state == "normal"
+                       else "arrow")
+        self.delete("all")
+        fill, outline, fg = self._colors()
+        _rounded(self, 1, 1, w - 2, h - 2, (h - 2) / 2.0,
+                 fill=fill, outline=outline,
+                 width=1 if outline else 0)
+        self.create_text(w / 2.0, h / 2.0, text=self._text,
+                         fill=fg, font=self._font)
+
+    # ------------------------------------------------------------ 交互
+    def _set_hover(self, on):
+        if self._state != "disabled" and on != self._hover:
+            self._hover = on
+            self._draw()
+
+    def _on_click(self, _e=None):
+        if self._state == "disabled" or not self._command:
+            return
+        self._command()
+
+    # ------------------------------------------------------------ 兼容
+    def configure(self, cnf=None, **kw):
+        if cnf:
+            kw.update(cnf)
+        changed = False
+        if "text" in kw:
+            self._text = kw.pop("text")
+            changed = True
+        if "state" in kw:
+            self._state = kw.pop("state")
+            self._hover = False
+            changed = True
+        if "command" in kw:
+            self._command = kw.pop("command")
+        super().configure(**kw)
+        if changed:
+            self._draw()
+
+    def cget(self, key):
+        if key == "state":
+            return self._state
+        if key == "text":
+            return self._text
+        return super().cget(key)
+
+
+class Card(tk.Frame):
+    """圆角功能卡片：白底胶囊大圆角 + 彩色标题药丸，内嵌 body 容器。
+
+    用法：card = Card(parent, title="① xxx")；控件放进 card.body。
+    高度随 body 内容自适应，宽度跟随 pack（fill="x"）。
+    """
+
+    PADX = 14       # body 左右留白
+    TPAD = 10       # 卡片顶部留白
+    TITLE_H = 26    # 标题药丸高
+    TGAP = 8        # 标题与 body 间距
+    BPAD = 12       # body 底部留白
+    R = 20          # 卡片圆角半径
+
+    def __init__(self, master, title=""):
+        super().__init__(master, bg=PAGE_BG, highlightthickness=0)
+        self._title = title
+        self._h = 0
+        self.canvas = tk.Canvas(self, bg=PAGE_BG, highlightthickness=0,
+                                bd=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.body = tk.Frame(self.canvas, bg=CARD_BG)
+        self._win = self.canvas.create_window(
+            self.PADX, self._body_y(), window=self.body, anchor="nw")
+        self.body.bind("<Configure>", self._relayout)
+        self.canvas.bind("<Configure>", self._on_canvas)
+
+    def _body_y(self):
+        return self.TPAD + (self.TITLE_H + self.TGAP if self._title else 0)
+
+    def _on_canvas(self, _e=None):
+        w = self.canvas.winfo_width()
+        if w <= 1:
+            return
+        self.canvas.itemconfigure(self._win, width=w - 2 * self.PADX)
+        self._draw()
+
+    def _relayout(self, _e=None):
+        self.body.update_idletasks()
+        h = self.body.winfo_reqheight()
+        total = self._body_y() + h + self.BPAD
+        if total != self._h:
+            self._h = total
+            self.canvas.configure(height=total)
+        self.canvas.itemconfigure(self._win, height=h)
+        self._draw()
+
+    def _draw(self):
+        c = self.canvas
+        c.delete("all")
+        w = c.winfo_width()
+        h = max(self._h, c.winfo_height())
+        if w <= 1:
+            return
+        _rounded(c, 1, 1, w - 2, h - 2, self.R,
+                 fill=CARD_BG, outline=CARD_EDGE, width=1)
+        if self._title:
+            f = tkfont.Font(family="Microsoft YaHei UI", size=9,
+                            weight="bold")
+            tw = f.measure(self._title)
+            x0, y0 = self.PADX, self.TPAD - 2
+            _rounded(c, x0, y0, x0 + tw + 22, y0 + self.TITLE_H,
+                     self.TITLE_H / 2.0, fill=ACCENT, outline="")
+            c.create_text(x0 + 11, y0 + self.TITLE_H / 2.0,
+                          text=self._title, fill="#ffffff", font=f,
+                          anchor="w")
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.configure(bg=PAGE_BG)
         self.title("J2ME 游戏 → 黑莓 9930 移植工具")
-        self.geometry("860x740")
+        self.geometry("880x760")
         # 任意形状都可以：内容会折行 + 滚动，不再靠大窗口才能看全
         self.minsize(440, 320)
         self.msgq = queue.Queue()
@@ -232,23 +432,49 @@ class App(tk.Tk):
     # ------------------------------------------------------------ style
     def _setup_style(self):
         style = ttk.Style(self)
+        try:
+            style.theme_use("clam")  # clam 尊重自定义配色
+        except tk.TclError:
+            pass
         font_ui = ("Microsoft YaHei UI", 9)
-        style.configure(".", font=font_ui)
-        style.configure("TButton", padding=(10, 5))
-        style.configure("TLabel", padding=1)
-        style.configure("TLabelframe.Label",
-                        font=("Microsoft YaHei UI", 9, "bold"))
-        # 主操作按钮
-        style.configure("Primary.TButton",
-                        font=("Microsoft YaHei UI", 10, "bold"),
-                        padding=(16, 8))
-        style.configure("Hint.TLabel", foreground="#777777",
-                        font=("Microsoft YaHei UI", 8))
-        style.configure("Info.TLabel",
-                        font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("Ok.TLabel", foreground="#0a7d0a")
-        style.configure("Warn.TLabel", foreground="#b06a00")
-        style.configure("Bad.TLabel", foreground="#b00020")
+        style.configure(".", font=font_ui, background=PAGE_BG)
+        # 笔记本（页签）
+        style.configure("TNotebook", background=PAGE_BG, borderwidth=0,
+                        tabmargins=(10, 8, 10, 0))
+        style.configure("TNotebook.Tab", padding=(18, 8),
+                        font=("Microsoft YaHei UI", 9),
+                        background="#dfe5ef", foreground=SUB,
+                        borderwidth=0, focuscolor=PAGE_BG)
+        style.map("TNotebook.Tab",
+                  background=[("selected", CARD_BG)],
+                  foreground=[("selected", INK)])
+        # 输入框 / 下拉框
+        style.configure("TEntry", fieldbackground="#ffffff",
+                        foreground=INK, insertcolor=INK,
+                        padding=(6, 4))
+        style.configure("TCombobox", fieldbackground="#ffffff",
+                        background="#eef2f9", foreground=INK,
+                        arrowsize=14, padding=(4, 3))
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", "#ffffff")],
+                  foreground=[("readonly", INK)])
+        # 进度条
+        style.configure("Horizontal.TProgressbar",
+                        troughcolor="#e2e8f2", background=ACCENT,
+                        bordercolor=PAGE_BG, lightcolor=ACCENT,
+                        darkcolor=ACCENT, thickness=10)
+        # 树形列表
+        style.configure("Treeview", background="#ffffff",
+                        fieldbackground="#ffffff", foreground=INK,
+                        rowheight=26, borderwidth=0, font=font_ui)
+        style.configure("Treeview.Heading", background="#f0f3f9",
+                        foreground=INK,
+                        font=("Microsoft YaHei UI", 9, "bold"),
+                        relief="flat", padding=(6, 5))
+        style.map("Treeview.Heading", background=[("active", "#e6ebf4")])
+        style.map("Treeview",
+                  background=[("selected", "#d7e0f5")],
+                  foreground=[("selected", INK)])
 
     def _fit_initial_size(self):
         """按内容实际需求给一个合适的初始窗口，并居中于屏幕。
@@ -270,7 +496,7 @@ class App(tk.Tk):
     def _build(self):
         self._setup_style()
         self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+        self.nb.pack(fill="both", expand=True, padx=8, pady=(8, 6))
 
         page1 = _ScrollFrame(self.nb)
         self.nb.add(page1, text="  游戏转换 / 装机  ")
@@ -280,51 +506,64 @@ class App(tk.Tk):
         self.nb.add(page2, text="  批量兼容性预扫描  ")
         self._build_batch(page2.body, page2)
 
+        page3 = _ScrollFrame(self.nb)
+        self.nb.add(page3, text="  帮助 · 常见问题  ")
+        self._build_help(page3.body, page3)
+
         self.status = tk.StringVar(value="就绪")
-        ttk.Label(self, textvariable=self.status,
-                  relief="sunken", anchor="w").pack(
-            fill="x", side="bottom")
+        tk.Label(self, textvariable=self.status, bg="#e3e9f3",
+                 fg=SUB, anchor="w", padx=14, pady=6,
+                 font=FONT).pack(fill="x", side="bottom")
 
     def _build_convert(self, root, sf):
-        PAD = {"padx": 8, "pady": 3}
+        PAD = {"padx": 10, "pady": 5}
 
-        # ① 游戏文件 ------------------------------------------------
-        f1 = ttk.LabelFrame(root, text="① 游戏 JAR")
+        # ① 选择游戏 ------------------------------------------------
+        f1 = Card(root, title="① 选择游戏 JAR")
         f1.pack(fill="x", **PAD)
+        row = tk.Frame(f1.body, bg=CARD_BG)
+        row.pack(fill="x", padx=12, pady=10)
+        row.columnconfigure(0, weight=1)
         self.jar_var = tk.StringVar()
-        ttk.Entry(f1, textvariable=self.jar_var).grid(
-            row=0, column=0, sticky="ew", padx=(8, 6), pady=8)
-        ttk.Button(f1, text="浏览…", width=10,
-                   command=self.pick_jar).grid(row=0, column=1, padx=(0, 8))
-        f1.columnconfigure(0, weight=1)
+        ttk.Entry(row, textvariable=self.jar_var).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8))
+        PillButton(row, text="浏览…", command=self.pick_jar).grid(
+            row=0, column=1)
 
-        # ② 适配设置（单列流式：窗口多窄都只折行、不裁切）------------
-        f2 = ttk.LabelFrame(root, text="② 适配设置（全部自动识别，通常不用改）")
+        # ② 适配设置（单列网格 + 流式行：窗口多窄都只折行、不裁切）--
+        f2 = Card(root, title="② 适配设置（全部自动识别，通常不用改）")
         f2.pack(fill="x", **PAD)
-        f2.columnconfigure(0, weight=1)
+        f2.body.columnconfigure(0, weight=1)
 
         # 原生分辨率：单选项 + 手动宽高，宽度不足自动折行
-        r = _FlowFrame(f2)
-        r.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
+        r = _FlowFrame(f2.body)
+        r.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 2))
         self.auto_size = tk.BooleanVar(value=True)
-        ttk.Label(r, text="原生分辨率:")
-        ttk.Radiobutton(r, text="自动识别（图片/JAD/诺基亚尺寸头）",
-                        variable=self.auto_size, value=True,
-                        command=self._auto_size_toggle)
-        ttk.Radiobutton(r, text="手动", variable=self.auto_size,
-                        value=False, command=self._auto_size_toggle)
-        ttk.Label(r, text="宽")
+        tk.Label(r, text="原生分辨率:", bg=CARD_BG, fg=INK, font=FONT)
+        tk.Radiobutton(r, text="自动识别（图片/JAD/诺基亚尺寸头）",
+                       variable=self.auto_size, value=True,
+                       command=self._auto_size_toggle, bg=CARD_BG,
+                       activebackground=CARD_BG, fg=INK, font=FONT,
+                       selectcolor="#ffffff", highlightthickness=0,
+                       bd=0, anchor="w")
+        tk.Radiobutton(r, text="手动", variable=self.auto_size,
+                       value=False, command=self._auto_size_toggle,
+                       bg=CARD_BG, activebackground=CARD_BG, fg=INK,
+                       font=FONT, selectcolor="#ffffff",
+                       highlightthickness=0, bd=0, anchor="w")
+        tk.Label(r, text="宽", bg=CARD_BG, fg=INK, font=FONT)
         self.nw_var = tk.StringVar(value="240")
         self.nw_entry = ttk.Entry(r, textvariable=self.nw_var, width=6)
-        ttk.Label(r, text="高")
+        tk.Label(r, text="高", bg=CARD_BG, fg=INK, font=FONT)
         self.nh_var = tk.StringVar(value="320")
         self.nh_entry = ttk.Entry(r, textvariable=self.nh_var, width=6)
 
         # 键位
-        r = ttk.Frame(f2)
-        r.grid(row=1, column=0, sticky="ew", padx=8, pady=2)
+        r = tk.Frame(f2.body, bg=CARD_BG)
+        r.grid(row=1, column=0, sticky="ew", padx=12, pady=2)
         r.columnconfigure(0, weight=1)
-        ttk.Label(r, text="键位映射:").grid(row=0, column=0, sticky="w")
+        tk.Label(r, text="键位映射:", bg=CARD_BG, fg=INK,
+                 font=FONT).grid(row=0, column=0, sticky="w")
         self.keymap_mode_var = tk.StringVar(value=KEY_MODE_AUTO)
         self.keymap_mode = ttk.Combobox(
             r, textvariable=self.keymap_mode_var,
@@ -336,230 +575,259 @@ class App(tk.Tk):
             value=KEY_PRESETS[DEFAULT_KEY_PRESET][1])
         self.keymap_entry = ttk.Entry(r, textvariable=self.keymap_text_var)
         self.keymap_entry.grid(row=2, column=0, sticky="ew", pady=(4, 0))
-        hint = ttk.Label(
-            r, style="Hint.TLabel",
+        hint = tk.Label(
+            r, bg=CARD_BG, fg=SUB, font=FONT_SMALL, anchor="w",
+            justify="left",
             text="自定义格式：源键=目标键，逗号分隔；字母直接写(w/a/s/d)，"
                  "功能键 space/enter/esc，数字 1-9，左/右软键 -6/-7")
         hint.grid(row=3, column=0, sticky="ew")
         sf.bind_wrap(hint, pad=40)
 
         # 选项行：同步 JAD + 高级固定补丁（自动折行）
-        r = _FlowFrame(f2)
-        r.grid(row=2, column=0, sticky="ew", padx=8, pady=(6, 2))
+        r = _FlowFrame(f2.body)
+        r.grid(row=2, column=0, sticky="ew", padx=12, pady=(6, 2))
         self.sync_jad = tk.BooleanVar(value=True)
-        ttk.Checkbutton(r, text="转换后同步更新同目录 JAD",
-                        variable=self.sync_jad)
+        tk.Checkbutton(r, text="转换后同步更新同目录 JAD",
+                       variable=self.sync_jad, bg=CARD_BG,
+                       activebackground=CARD_BG, fg=INK, font=FONT,
+                       selectcolor="#ffffff", highlightthickness=0,
+                       bd=0, anchor="w")
         self.fixed_on = tk.BooleanVar(value=False)
-        ttk.Checkbutton(r, text="高级：固定分辨率补丁模式",
-                        variable=self.fixed_on,
-                        command=self._fixed_toggle)
-        ttk.Label(r, style="Hint.TLabel",
-                  text="（直接改字节码常量，不注入缩放引擎）")
+        tk.Checkbutton(r, text="高级：固定分辨率补丁模式",
+                       variable=self.fixed_on,
+                       command=self._fixed_toggle, bg=CARD_BG,
+                       activebackground=CARD_BG, fg=INK, font=FONT,
+                       selectcolor="#ffffff", highlightthickness=0,
+                       bd=0, anchor="w")
+        tk.Label(r, text="（直接改字节码常量，不注入缩放引擎）",
+                 bg=CARD_BG, fg=SUB, font=FONT_SMALL)
 
         # 高级：固定补丁参数（默认隐藏）
-        self.fixed_frame = ttk.Frame(f2)
+        self.fixed_frame = tk.Frame(f2.body, bg=CARD_BG)
         self.fixed_frame.grid(row=3, column=0, sticky="ew",
-                              padx=8, pady=(0, 4))
+                              padx=12, pady=(0, 4))
         ff = _FlowFrame(self.fixed_frame)
         ff.pack(fill="x")
         self.mode_var = tk.StringVar(value="auto")
         self.preset_var = tk.StringVar(
             value=PRESET_LABELS[BB_PORTRAIT_INDEX])
-        ttk.Label(ff, text="目标尺寸预设:")
+        tk.Label(ff, text="目标尺寸预设:", bg=CARD_BG, fg=INK, font=FONT)
         self.preset = ttk.Combobox(ff, textvariable=self.preset_var,
                                    values=PRESET_LABELS, width=28,
                                    state="readonly")
         self.preset.bind("<<ComboboxSelected>>", self._preset_change)
-        ttk.Label(ff, text="宽")
+        tk.Label(ff, text="宽", bg=CARD_BG, fg=INK, font=FONT)
         self.tw_var = tk.StringVar(value="480")
         self.tw_entry = ttk.Entry(ff, textvariable=self.tw_var, width=6)
-        ttk.Label(ff, text="高")
+        tk.Label(ff, text="高", bg=CARD_BG, fg=INK, font=FONT)
         self.th_var = tk.StringVar(value="640")
         self.th_entry = ttk.Entry(ff, textvariable=self.th_var, width=6)
 
         # 识别信息条：按钮一行，识别结果整行显示在下方（任意宽度可折行）
-        r = ttk.Frame(f2)
-        r.grid(row=4, column=0, sticky="ew", padx=8, pady=(4, 8))
+        r = tk.Frame(f2.body, bg=CARD_BG)
+        r.grid(row=4, column=0, sticky="ew", padx=12, pady=(4, 10))
         r.columnconfigure(0, weight=1)
-        ttk.Button(r, text="读取游戏信息",
+        PillButton(r, text="读取游戏信息",
                    command=self.read_game_info).grid(row=0, column=0,
-                                                      sticky="w")
+                                                     sticky="w")
         self.info_var = tk.StringVar(value="尚未读取（选择 JAR 后会自动识别）")
-        self.info_lbl = ttk.Label(r, textvariable=self.info_var,
-                                  style="Info.TLabel")
+        self.info_lbl = tk.Label(r, textvariable=self.info_var,
+                                 bg=CARD_BG, fg=INK, font=FONT_BOLD,
+                                 anchor="w", justify="left")
         self.info_lbl.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         sf.bind_wrap(self.info_lbl, pad=40)
 
         # ③ 输出 / 执行 ---------------------------------------------
-        f3 = ttk.LabelFrame(root, text="③ 输出与执行")
+        f3 = Card(root, title="③ 输出与执行")
         f3.pack(fill="x", **PAD)
-        f3.columnconfigure(1, weight=1)
+        f3.body.columnconfigure(1, weight=1)
 
-        ttk.Label(f3, text="转换后 JAR:").grid(
-            row=0, column=0, sticky="e", padx=(8, 4), pady=(8, 2))
-        r = ttk.Frame(f3)
-        r.grid(row=0, column=1, sticky="ew", pady=(8, 2))
+        tk.Label(f3.body, text="转换后 JAR:", bg=CARD_BG, fg=INK,
+                 font=FONT).grid(row=0, column=0, sticky="e",
+                                 padx=(12, 6), pady=(10, 2))
+        r = tk.Frame(f3.body, bg=CARD_BG)
+        r.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(10, 2))
         r.columnconfigure(0, weight=1)
         self.out_var = tk.StringVar()
         ttk.Entry(r, textvariable=self.out_var).grid(
             row=0, column=0, sticky="ew")
-        ttk.Button(r, text="另存为…", width=8,
-                   command=self.pick_out).grid(row=0, column=1,
-                                               padx=(6, 0))
+        PillButton(r, text="另存为…", command=self.pick_out).grid(
+            row=0, column=1, padx=(8, 0))
 
-        ttk.Label(f3, text="黑莓模块名:").grid(
-            row=1, column=0, sticky="e", padx=(8, 4), pady=2)
-        r = ttk.Frame(f3)
-        r.grid(row=1, column=1, sticky="ew", pady=2)
+        tk.Label(f3.body, text="黑莓模块名:", bg=CARD_BG, fg=INK,
+                 font=FONT).grid(row=1, column=0, sticky="e",
+                                 padx=(12, 6), pady=2)
+        r = tk.Frame(f3.body, bg=CARD_BG)
+        r.grid(row=1, column=1, sticky="ew", padx=(0, 12), pady=2)
         r.columnconfigure(0, weight=1)
         self.codname_var = tk.StringVar()
         ttk.Entry(r, textvariable=self.codname_var,
                   width=18).grid(row=0, column=0, sticky="w")
-        hint = ttk.Label(r, text="（留空自动取文件名，只能字母数字下划线）",
-                         style="Hint.TLabel")
+        hint = tk.Label(r, bg=CARD_BG, fg=SUB, font=FONT_SMALL,
+                        anchor="w", justify="left",
+                        text="（留空自动取文件名，只能字母数字下划线）")
         hint.grid(row=1, column=0, sticky="ew")
         sf.bind_wrap(hint, pad=140)
         self.device_var = tk.StringVar(value="设备状态：检测中…")
-        ttk.Label(r, textvariable=self.device_var).grid(
-            row=2, column=0, sticky="w", pady=(4, 0))
-        self.dev_btn = ttk.Button(r, text="重新检测",
+        self.device_lbl = tk.Label(r, textvariable=self.device_var,
+                                   bg=CARD_BG, fg=SUB, font=FONT)
+        self.device_lbl.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.dev_btn = PillButton(r, text="重新检测",
                                   command=self.check_device)
-        self.dev_btn.grid(row=3, column=0, sticky="w", pady=(2, 0))
+        self.dev_btn.grid(row=3, column=0, sticky="w", pady=(4, 2))
 
         # 主操作按钮组（宽度不够自动折成多行）
-        r = _FlowFrame(f3)
+        r = _FlowFrame(f3.body)
         r.grid(row=2, column=0, columnspan=2, sticky="ew",
-               padx=8, pady=(8, 2))
-        self.bb_auto_btn = ttk.Button(
-            r, style="Primary.TButton",
+               padx=12, pady=(8, 2))
+        self.bb_auto_btn = PillButton(
+            r, kind="primary", padx=18, pady=8,
             text="一键：转换 → 打包 COD → 装机",
             command=lambda: self.build_cod("auto"))
-        self.bb_btn = ttk.Button(
+        self.bb_btn = PillButton(
             r, text="仅打包 COD",
             command=lambda: self.build_cod(False))
-        self.run_btn = ttk.Button(
+        self.run_btn = PillButton(
             r, text="只转换 JAR（不打包）", command=self.convert)
-        self.bb_load_btn = ttk.Button(
+        self.bb_load_btn = PillButton(
             r, text="已有 COD 直接装机",
             command=lambda: self.build_cod(True, rebuild=False))
-        hint = ttk.Label(
-            f3, style="Hint.TLabel",
+        hint = tk.Label(
+            f3.body, bg=CARD_BG, fg=SUB, font=FONT_SMALL, anchor="w",
+            justify="left",
             text="主按钮：USB 连着手机就自动装机，没连则只生成 COD；"
                  "回车=左软键，DEL/ESC=右软键，已内置无需配置。")
         hint.grid(row=3, column=0, columnspan=2, sticky="ew",
-                  padx=8, pady=(0, 8))
+                  padx=12, pady=(0, 10))
         sf.bind_wrap(hint, pad=40)
 
         # 日志 ------------------------------------------------------
-        box = ttk.LabelFrame(root, text="日志")
+        box = Card(root, title="运行日志")
         box.pack(fill="both", expand=True, **PAD)
-        self.logbox = tk.Text(box, height=9, wrap="word",
+        inner = tk.Frame(box.body, bg=CARD_BG)
+        inner.pack(fill="both", expand=True, padx=12, pady=10)
+        inner.rowconfigure(0, weight=1)
+        inner.columnconfigure(0, weight=1)
+        self.logbox = tk.Text(inner, height=9, wrap="word",
                               font=("Consolas", 9), relief="flat",
-                              background="#fafafa")
-        sb = ttk.Scrollbar(box, command=self.logbox.yview)
+                              background="#fafbfd", foreground=INK,
+                              insertbackground=INK, bd=0,
+                              highlightthickness=1,
+                              highlightbackground=CARD_EDGE,
+                              highlightcolor=CARD_EDGE)
+        sb = ttk.Scrollbar(inner, command=self.logbox.yview)
         self.logbox.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.logbox.pack(fill="both", expand=True, padx=(8, 0), pady=8)
+        sb.grid(row=0, column=1, sticky="ns")
+        self.logbox.grid(row=0, column=0, sticky="nsew")
 
     def _build_batch(self, parent, sf):
         """批量预扫描页面：目录 + 分组操作 + 结果 Treeview。"""
-        pad = {"padx": 8, "pady": 3}
+        pad = {"padx": 10, "pady": 5}
 
-        box = ttk.LabelFrame(parent, text="扫描目录")
-        box.pack(fill="x", **pad)
-        box.columnconfigure(0, weight=1)
+        # ① 扫描目录 ------------------------------------------------
+        c1 = Card(parent, title="① 扫描目录")
+        c1.pack(fill="x", **pad)
+        c1.body.columnconfigure(0, weight=1)
         self.batch_dir_var = tk.StringVar()
-        ttk.Entry(box, textvariable=self.batch_dir_var).grid(
-            row=0, column=0, sticky="ew", padx=(8, 6), pady=8)
-        ttk.Button(box, text="浏览…",
-                   command=self.pick_batch_dir).grid(
-            row=0, column=1, padx=(0, 8))
+        ttk.Entry(c1.body, textvariable=self.batch_dir_var).grid(
+            row=0, column=0, sticky="ew", padx=(12, 8), pady=10)
+        PillButton(c1.body, text="浏览…",
+                   command=self.pick_batch_dir).grid(row=0, column=1,
+                                                     padx=(0, 12))
         # 选项按钮自动折行，窗口窄也不会被切掉
-        opt = _FlowFrame(box)
+        opt = _FlowFrame(c1.body)
         opt.grid(row=1, column=0, columnspan=2, sticky="ew",
-                 padx=8, pady=(0, 4))
+                 padx=12, pady=(0, 4))
         self.batch_recursive = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opt, text="递归子目录",
-                        variable=self.batch_recursive)
-        self.batch_btn = ttk.Button(
-            opt, text="开始扫描", style="Primary.TButton",
-            command=self.batch_scan)
+        tk.Checkbutton(opt, text="递归子目录",
+                       variable=self.batch_recursive, bg=CARD_BG,
+                       activebackground=CARD_BG, fg=INK, font=FONT,
+                       selectcolor="#ffffff", highlightthickness=0,
+                       bd=0, anchor="w")
+        self.batch_btn = PillButton(opt, text="开始扫描",
+                                    kind="primary",
+                                    command=self.batch_scan)
         # 进度行：进度条 + 状态文字（流式：宽度不够时状态文字自动
         # 换到进度条下方并按宽度折行，绝不被切）
-        prow = _FlowFrame(box)
+        prow = _FlowFrame(c1.body)
         prow.grid(row=2, column=0, columnspan=2, sticky="ew",
-                  padx=8, pady=(0, 8))
+                  padx=12, pady=(0, 10))
         self.scan_pb = ttk.Progressbar(prow, length=240,
                                        mode="indeterminate")
         self.batch_status = tk.StringVar(value="就绪：选择目录后点「开始扫描」")
-        ttk.Label(prow, textvariable=self.batch_status,
-                  style="Info.TLabel")
+        ttk.Label(prow, textvariable=self.batch_status)
 
-        ops = ttk.LabelFrame(parent, text="选中行操作（先在列表中点选）")
-        ops.pack(fill="x", **pad)
-        r1 = _FlowFrame(ops)
-        r1.pack(fill="x", padx=8, pady=(6, 2))
-        ttk.Label(r1, text="选择:", foreground="#555555")
-        ttk.Button(r1, text="全选「可上」",
+        # ② 选中行操作 ----------------------------------------------
+        c2 = Card(parent, title="② 选中行操作（先在列表中点选）")
+        c2.pack(fill="x", **pad)
+        r1 = _FlowFrame(c2.body)
+        r1.pack(fill="x", padx=12, pady=(10, 2))
+        tk.Label(r1, text="选择:", bg=CARD_BG, fg=SUB, font=FONT)
+        PillButton(r1, kind="soft", text="全选「可上」",
                    command=lambda: self._batch_select_by_tag("ok"))
-        ttk.Button(r1, text="全选「不可上」",
+        PillButton(r1, kind="soft", text="全选「不可上」",
                    command=lambda: self._batch_select_by_tag("bad"))
-        ttk.Button(r1, text="反选",
+        PillButton(r1, kind="soft", text="反选",
                    command=self._batch_invert_selection)
-        ttk.Button(r1, text="全不选",
+        PillButton(r1, kind="soft", text="全不选",
                    command=lambda: self.batch_tree.selection_set(()))
-        r2 = _FlowFrame(ops)
-        r2.pack(fill="x", padx=8, pady=(0, 6))
-        ttk.Label(r2, text="文件:", foreground="#555555")
-        ttk.Button(r2, text="复制到…", command=self._batch_copy)
-        ttk.Button(r2, text="移动到…", command=self._batch_move)
-        ttk.Button(r2, text="删除…", command=self._batch_delete)
-        ttk.Button(r2, text="复制完整路径",
-                   command=self._batch_copy_paths)
+        r2 = _FlowFrame(c2.body)
+        r2.pack(fill="x", padx=12, pady=(2, 10))
+        tk.Label(r2, text="文件:", bg=CARD_BG, fg=SUB, font=FONT)
+        PillButton(r2, text="复制到…", command=self._batch_copy)
+        PillButton(r2, text="移动到…", command=self._batch_move)
+        PillButton(r2, kind="danger", text="删除…", command=self._batch_delete)
+        PillButton(r2, text="复制完整路径", command=self._batch_copy_paths)
 
-        conv = ttk.LabelFrame(parent, text="批量转换（自动适配，失败自动跳过并记录）")
-        conv.pack(fill="x", **pad)
-        conv.columnconfigure(1, weight=1)
-        ttk.Label(conv, text="输出目录:").grid(
-            row=0, column=0, sticky="e", padx=(8, 4), pady=(6, 2))
-        r = ttk.Frame(conv)
-        r.grid(row=0, column=1, sticky="ew", pady=(6, 2))
+        # ③ 批量转换 ------------------------------------------------
+        c3 = Card(parent, title="③ 批量转换（自动适配，失败自动跳过并记录）")
+        c3.pack(fill="x", **pad)
+        c3.body.columnconfigure(1, weight=1)
+        tk.Label(c3.body, text="输出目录:", bg=CARD_BG, fg=INK,
+                 font=FONT).grid(row=0, column=0, sticky="e",
+                                 padx=(12, 6), pady=(10, 2))
+        r = tk.Frame(c3.body, bg=CARD_BG)
+        r.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(10, 2))
         r.columnconfigure(0, weight=1)
         self.batch_outdir_var = tk.StringVar()
         ttk.Entry(r, textvariable=self.batch_outdir_var).grid(
             row=0, column=0, sticky="ew")
-        ttk.Button(r, text="浏览…",
+        PillButton(r, text="浏览…",
                    command=self.pick_batch_outdir).grid(
-            row=0, column=1, padx=(6, 0))
+            row=0, column=1, padx=(8, 0))
         self.batch_conv_bad = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            conv, text="预扫描判「不可上」的也强制尝试转换",
-            variable=self.batch_conv_bad).grid(
-            row=1, column=0, columnspan=2, sticky="w", padx=8, pady=2)
-        hint = ttk.Label(
-            conv, style="Hint.TLabel",
+        tk.Checkbutton(
+            c3.body, text="预扫描判「不可上」的也强制尝试转换",
+            variable=self.batch_conv_bad, bg=CARD_BG,
+            activebackground=CARD_BG, fg=INK, font=FONT,
+            selectcolor="#ffffff", highlightthickness=0, bd=0,
+            anchor="w").grid(row=1, column=0, columnspan=2, sticky="w",
+                             padx=12, pady=2)
+        hint = tk.Label(
+            c3.body, bg=CARD_BG, fg=SUB, font=FONT_SMALL, anchor="w",
+            justify="left",
             text="（不勾则直接跳过并记入报告；同名输出自动加序号，"
                  "不会覆盖原游戏）")
         hint.grid(row=2, column=0, columnspan=2, sticky="ew",
-                  padx=8, pady=(0, 2))
+                  padx=12, pady=(0, 2))
         sf.bind_wrap(hint, pad=40)
-        r = _FlowFrame(conv)
+        r = _FlowFrame(c3.body)
         r.grid(row=3, column=0, columnspan=2, sticky="ew",
-               padx=8, pady=(2, 6))
-        self.batch_conv_sel_btn = ttk.Button(
+               padx=12, pady=(2, 10))
+        self.batch_conv_sel_btn = PillButton(
             r, text="批量转换：选中行",
             command=lambda: self.batch_convert("selected"))
-        self.batch_conv_ok_btn = ttk.Button(
-            r, style="Primary.TButton",
-            text="批量转换：全部「可上」",
+        self.batch_conv_ok_btn = PillButton(
+            r, kind="primary", text="批量转换：全部「可上」",
             command=lambda: self.batch_convert("ok"))
         self.batch_pb = ttk.Progressbar(r, length=220, mode="determinate")
         self.batch_pb_var = tk.StringVar(value="")
-        ttk.Label(r, textvariable=self.batch_pb_var, style="Hint.TLabel")
+        tk.Label(r, textvariable=self.batch_pb_var, bg=CARD_BG, fg=SUB,
+                 font=FONT_SMALL)
 
-        tree_box = ttk.LabelFrame(
-            parent, text="扫描结果（双击行查看完整诊断）")
-        tree_box.pack(fill="both", expand=True, **pad)
+        # ④ 扫描结果 ------------------------------------------------
+        c4 = Card(parent, title="④ 扫描结果（双击行查看完整诊断）")
+        c4.pack(fill="both", expand=True, **pad)
         cols = ("name", "status", "integrity", "major", "vendor", "jsr",
                 "canvas", "size", "reason")
         labels = ("文件名", "状态", "完整性", "类版本", "厂商扩展", "JSR 扩展",
@@ -569,8 +837,8 @@ class App(tk.Tk):
                    "w", "center", "w")
         # 窄窗口时横向滚动；宽窗口时首列与原因列吃掉多余宽度
         stretch_cols = {"name", "reason"}
-        inner = ttk.Frame(tree_box)
-        inner.pack(fill="both", expand=True, padx=8, pady=8)
+        inner = tk.Frame(c4.body, bg=CARD_BG)
+        inner.pack(fill="both", expand=True, padx=12, pady=10)
         inner.rowconfigure(0, weight=1)
         inner.columnconfigure(0, weight=1)
         self.batch_tree = ttk.Treeview(
@@ -590,10 +858,139 @@ class App(tk.Tk):
         vsb.grid(row=0, column=1, sticky="ns")
         self.batch_tree.grid(row=0, column=0, sticky="nsew")
         self.batch_tree.bind("<Double-1>", self._batch_row_detail)
-        self.batch_tree.tag_configure("ok", foreground="#0a7d0a")
-        self.batch_tree.tag_configure("bad", foreground="#b00020")
+        self.batch_tree.tag_configure("ok", foreground=OK_FG)
+        self.batch_tree.tag_configure("bad", foreground=BAD_FG)
 
         self.batch_results = []
+
+    def _build_help(self, root, sf):
+        """帮助页：各功能讲解 + 常见问题解答。"""
+
+        def card(title, lines):
+            c = Card(root, title=title)
+            c.pack(fill="x", padx=10, pady=5)
+            for kind, txt in lines:
+                if kind == "h":       # 小节标题
+                    lbl = tk.Label(c.body, text=txt, bg=CARD_BG, fg=INK,
+                                   font=FONT_H2, anchor="w",
+                                   justify="left")
+                elif kind == "q":     # FAQ 问题
+                    lbl = tk.Label(c.body, text=txt, bg=CARD_BG,
+                                   fg=ACCENT, font=FONT_BOLD, anchor="w",
+                                   justify="left")
+                elif kind == "a":     # FAQ 答案（缩进）
+                    lbl = tk.Label(c.body, text="　" + txt, bg=CARD_BG,
+                                   fg=INK, font=FONT, anchor="w",
+                                   justify="left")
+                elif kind == "s":     # 弱化说明
+                    lbl = tk.Label(c.body, text=txt, bg=CARD_BG, fg=SUB,
+                                   font=FONT_SMALL, anchor="w",
+                                   justify="left")
+                else:                 # 普通条目
+                    lbl = tk.Label(c.body, text=txt, bg=CARD_BG, fg=INK,
+                                   font=FONT, anchor="w", justify="left")
+                lbl.pack(fill="x", padx=14, pady=(6, 1))
+                sf.bind_wrap(lbl, pad=60)
+
+        card("快速上手（三步）", [
+            ("n", "1. 在「① 选择游戏 JAR」里选一个 J2ME 游戏 jar —— 工具会"
+                  "自动识别原生分辨率与按键方案，并预检 COD 转换风险。"),
+            ("n", "2. 设置一般不用动，直接点「一键：转换 → 打包 COD → 装机」："
+                  "USB 连着手机就自动装机，没连则只生成 COD。"),
+            ("n", "3. 装机后点图标闪退？多半是手机里有旧坏模块：先在 "
+                  "选项→设备→应用程序管理 里彻底删除并重启手机，再装一次"
+                  "（详见下方 FAQ）。"),
+        ])
+
+        card("转换 / 装机页功能详解", [
+            ("h", "输入与识别"),
+            ("n", "原生分辨率 —— 游戏原始画面尺寸。默认「自动识别」"
+                  "（从游戏内图片 / JAD / 诺基亚尺寸头推断）；识别失败时"
+                  "选「手动」填宽高。"),
+            ("n", "读取游戏信息 —— 显示识别结果：原生分辨率、按键风格、"
+                  "Canvas 类型、包完整性、COD 风险预警；详细内容同时"
+                  "写入日志。"),
+            ("h", "画面与键位"),
+            ("n", "键位映射 —— 默认「自动识别」：数字键常量多的游戏用"
+                  "「黑莓键帽数字」方案（WER/SDF/ZXC=1-9），厂商码"
+                  "（-1~-7）多的用「WASD」方案；也可手动选方案或"
+                  "「自定义映射」。"),
+            ("n", "转换后同步更新同目录 JAD —— 游戏旁有同名 JAD 时，"
+                  "自动生成配套新 JAD（装机 / OTA 优先用 JAD 入口）。"),
+            ("n", "固定分辨率补丁模式（高级）—— 直接改字节码里的屏幕"
+                  "常量，不注入缩放引擎，适合缩放后画面异常的游戏；"
+                  "此模式下键位注入不生效。"),
+            ("h", "输出与执行"),
+            ("n", "黑莓模块名 —— 安装后的内部模块名，留空自动取文件名"
+                  "（仅字母 / 数字 / 下划线）。"),
+            ("n", "四个操作按钮 —— 「一键」= 转换+打包 COD+自动装机；"
+                  "「仅打包 COD」= 只出文件不装机；「只转换 JAR」= 给 "
+                  "PC 模拟器试玩用；「已有 COD 直接装机」= 重复安装 / "
+                  "换机时用。"),
+            ("n", "运行日志 —— 全部步骤输出；报错时先看这里的错误行。"),
+        ])
+
+        card("批量预扫描页功能详解", [
+            ("n", "扫描 —— 对目录内每个 jar 检查：包完整性（有无启动入口）、"
+                  "类版本（须 ≤48 即 Java 1.4）、是否引用黑莓不支持的"
+                  "厂商 / JSR 扩展、Canvas 类型、推测分辨率。"),
+            ("n", "结果列含义 —— 状态=可否上黑莓；完整性=能否运行；"
+                  "厂商扩展 / JSR=是否用了黑莓没有的 API；"
+                  "Canvas=画面类；原因=不可上的具体理由。"),
+            ("n", "双击任意行 —— 查看完整诊断：超限类清单、扩展 API 列表、"
+                  "完整性明细。"),
+            ("n", "选中行操作 —— 全选「可上」/「不可上」、反选后，可批量"
+                  "复制、移动、删除或复制完整路径。"),
+            ("n", "批量转换 —— 转换选中行或全部「可上」游戏到指定目录；"
+                  "同名输出自动加序号，绝不覆盖；失败 / 跳过明细写入"
+                  "输出目录的「转换失败.txt」。"),
+            ("n", "强制尝试「不可上」—— 勾选后连判定不兼容的也试一次，"
+                  "偶尔能救回。"),
+        ])
+
+        card("键位方案与默认按键", [
+            ("n", "黑莓键帽数字：W/E/R=1/2/3，S/D/F=4/5/6，Z/X/C=7/8/9，"
+                  "空格与 D=中央 5 键（跳 / 开火 / 确认）。"),
+            ("n", "厂商游戏码：W/A/S/D=上下左右，空格=动作 / 确认。"),
+            ("n", "软键全方案通用：回车=左软键（确定 / 菜单），DEL 或 "
+                  "ESC=右软键（返回 / 取消），已内置无需配置。"),
+            ("n", "触摸板：上 / 下 / 左 / 右滑动=方向键，短按=中央 5 键；"
+                  "JAD 固定写入 RIM-TouchCompatibilityMode: false，"
+                  "系统会给完整 480×640 真屏而非虚拟小窗。"),
+        ])
+
+        card("常见问题 FAQ", [
+            ("q", "Q1 转换后游戏画面偏移 / 有大黑边？"),
+            ("a", "原生分辨率识别错了。点「读取游戏信息」确认真实尺寸，"
+                  "或在②中选「手动」填宽高后重新转换。"),
+            ("q", "Q2 按键和预期不符（跳跃无效、方向错位）？"),
+            ("a", "键位方案判定错了。在键位映射下拉里手动换成另一方案；"
+                  "仍不行就用「自定义映射」按 源键=目标键 逐个写。"),
+            ("q", "Q3 装到手机点图标就闪退 / 提示模块损坏？"),
+            ("a", "手机里残留了旧坏模块。先在 选项→设备→应用程序管理 里"
+                  "彻底删除该游戏并重启手机；安装时打开 .jad（不是 jar），"
+                  "且 jad 与 jar 必须在同一目录。"),
+            ("q", "Q4 COD 构建失败，日志提到类过大 / 控制流验证？"),
+            ("a", "触发了 RIM COD 转换器硬限制（单类字节码 ≥60KB 或"
+                  "验证帧 ≥50KB、全方法 try/catch 的混淆类）。基本无解，"
+                  "请找该游戏的更小版本；「读取游戏信息」会提前预警。"),
+            ("q", "Q5 日志提示解压后超过 20MB？"),
+            ("a", "超过 COD 分片硬上限（最多 255 片），无法转换，"
+                  "请换更小的游戏版本。"),
+            ("q", "Q6 点「一键」提示未检测到设备？"),
+            ("a", "没连手机时只会生成 COD。连接手机（装好黑莓驱动）后点"
+                  "「重新检测」，再用「已有 COD 直接装机」。"),
+            ("q", "Q7 批量转换会覆盖原文件吗？"),
+            ("a", "不会。输出到指定目录，同名自动加序号；原目录文件不动。"),
+            ("q", "Q8 横屏 / 触屏游戏怎么处理？"),
+            ("a", "横屏游戏（如 640×360）转换后自动横屏显示；触摸屏游戏"
+                  "拿到完整 480×640 真屏，触摸板与键盘映射见上方键位说明。"),
+            ("q", "Q9 想先在电脑上试玩再装机？"),
+            ("a", "用「只转换 JAR（不打包）」，产物可在 MicroEmulator 等"
+                  "PC 模拟器里运行验证，确认没问题再回来打包装机。"),
+            ("s", "更多技术细节（构建管线、COD 限制、移植原理）见仓库 "
+                  "README.md。"),
+        ])
 
     # --------------------------------------------------------- state
     def _all_action_buttons(self):
@@ -726,8 +1123,10 @@ class App(tk.Tk):
                     self.dev_btn.configure(state="normal")
                     if connected:
                         self.device_var.set("设备状态：已连接 ✓")
+                        self.device_lbl.configure(fg=OK_FG)
                     else:
                         self.device_var.set("设备状态：未连接（仅打包）")
+                        self.device_lbl.configure(fg=WARN_FG)
                 elif tag == "__info__":
                     jar, info, err = msg[1], msg[2], msg[3]
                     if jar == self.jar_var.get().strip():
@@ -785,7 +1184,7 @@ class App(tk.Tk):
             messagebox.showwarning("提示", "请先选择存在的 JAR 文件")
             return
         self.info_var.set("识别中…")
-        self.info_lbl.configure(style="Info.TLabel")
+        self.info_lbl.configure(fg=INK)
 
         def work():
             info = None
@@ -815,7 +1214,7 @@ class App(tk.Tk):
     def _show_game_info(self, info, err):
         if err is not None:
             self.info_var.set("识别失败：%s" % err)
-            self.info_lbl.configure(style="Bad.TLabel")
+            self.info_lbl.configure(fg=BAD_FG)
             return
         parts = []
         size = info["size"]
@@ -844,9 +1243,9 @@ class App(tk.Tk):
         else:
             parts.append("无 COD 风险")
         if integ["fatal"] or risks:
-            self.info_lbl.configure(style="Bad.TLabel")
+            self.info_lbl.configure(fg=BAD_FG)
         else:
-            self.info_lbl.configure(style="Ok.TLabel")
+            self.info_lbl.configure(fg=OK_FG)
         self.info_var.set("　·　".join(parts))
 
         # 详细信息进日志
@@ -934,6 +1333,7 @@ class App(tk.Tk):
         """Probe USB for a BlackBerry; runs in a background thread."""
         self.dev_btn.configure(state="disabled")
         self.device_var.set("设备状态：检测中…")
+        self.device_lbl.configure(fg=SUB)
 
         def work():
             try:

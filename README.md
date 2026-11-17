@@ -1,63 +1,90 @@
-# JarResizer — J2ME 游戏黑莓 BlackBerry 转换工具
+# JarResizer 2.0 — J2ME 游戏黑莓 BlackBerry 转换工具（Rust）
 
 把诺基亚 360x640（N97 系列）J2ME 游戏 jar 转换到 BlackBerry Bold 9930
-（480x640，OS 7.1）：画面缩放、键盘适配、Nokia 兼容层注入、多指触摸虚拟按键，
-支持一键构建 COD 并通过 USB 自动装机。
+（480x640，OS 7.1）：画面缩放、键盘适配、兼容层注入，支持一键构建 COD
+并通过 USB 自动装机。2.0 为 Rust 重写版，GUI 使用 eframe/egui。
 
-## 快速开始（免安装）
+## 构建
 
-1. 从 [Releases](../../releases) 下载 `JarResizer-portable.zip` 并解压
-2. 双击 `JarResizer.exe`
-3. 选择游戏 jar → 转换；产物生成在源文件旁
+需要 Windows + Rust（stable，edition 2024）与 MinGW 工具链：
 
-包内自带完整工具链（`tools\jre` 精简运行时、ecj、ProGuard、rapc、javaloader），
-无需安装 Python 或 JDK。仅“重构建兼容层源码”时需要本机 JDK17（见下文）。
+```powershell
+$env:Path = "C:\mingw64\bin;$env:USERPROFILE\.cargo\bin;$env:Path"
+cargo build --release
+```
+
+产物：`target\release\JarResizer.exe`。运行方式：双击 exe，或
+
+```powershell
+.\target\release\JarResizer.exe
+```
+
+`assets\`、`tools\`、`adapter\`、各 stub 目录与 `patches\` 必须与 exe 位于同一
+根目录下（程序按 exe/当前目录自动定位）。纯逻辑单元测试：
+
+```powershell
+cargo test
+```
 
 ## 功能
 
-- 360x640 → 480x640 画面适配（fit/cover 模式，触摸坐标自动换算）
-- Nokia UI 兼容层自动注入（FullCanvas / DirectUtils / DirectGraphics / TactileFeedback 等）
-- 兼容层 stub 注入（重定向到私有 `jr.*` 包）：
-  - JSR-75 文件（内存文件系统接管 `file:` 连接，支持通配符列目录）
-  - JSR-120 短信（`sms://` 假连接，`send()` 静默成功，不发真实短信）
-  - JSR-135 音频（MIDIControl / TempoControl 等预验证 classpath 补全）
-  - 传感器假数据（可绕过游戏状态机限制）、MD5（`java.security` 重定向）
-- 两套键位方案自动判定（扫描 keyPressed 调用链）：
-  - 数字键游戏 → 黑莓键帽方案：QWE/ASD/ZXC = 1-9，空格 = 0/5
-  - 厂商码游戏 → WASD 方案：WASD 移动，空格 = 动作/开火
-- 多指触摸虚拟按键层（`jr/ScaleCanvas`）：屏幕虚拟按键多键同按，
-  `/jr-vkeys` 资源可自定义布局（千分比坐标），半透明渲染、引用计数合成按键
-- COD 构建管线：ProGuard `-microedition` 预校验 → class major 48 → JAD → rapc，
-  黑莓连接后 `javaloader -u` 自动装机
-- rapc 风险预检：单类 64KB 代码段、全方法 try/catch、255 分片 / 约 20MB 解压上限，
-  超限提前预警（避免 rapc 内部错误盲查）
+- **两种转换模式**
+  - `AUTO`：注入预验证的 `jr/ScaleCanvas`，把 Canvas/GameCanvas 子类改挂到
+    适配层，保留原生设计分辨率渲染后再缩放；支持 `jr-fit`（0 铺满 / 1 适应 /
+    2 裁剪）、`jr-crop` 与 `/jr-size`、`/jr-keys` 资源。
+  - `FIXED`：同长度改写字节码中的 BIPUSH/SIPUSH 尺寸常量，StackMap 保持有效，
+    适合简单固定分辨率游戏。
+- **原生分辨率识别**：图片尺寸（PNG/JPEG）、JAD orientation/display-size、
+  预设分辨率常量统计、最大图片兜底。
+- **键位适配**：BFS 扫描 `keyPressed(I)V` 调用链，自动判定数字键或厂商码游戏；
+  黑莓键帽方案 WER/SDF/ZXC = 1–9，或 WASD + 空格厂商码方案；也支持关闭/自定义。
+- **兼容层 shim 自动注入**：Nokia UI（FullCanvas/DirectGraphics/…）、JSR-256
+  传感器、`java.security` MD5、JSR-120 WMA、JSR-75 文件、JSR-184 M3G；受保护
+  包 Utf8 重写、`Connector.open` 重定向、按键钩子与 ASM 字节码补丁。
+- **包完整性预检**：MIDlet 入口、启动类缺失、0 字节 class、残留签名文件等，
+  引擎/残缺包直接拦截；厂商扩展与黑莓不支持 JSR 预警。
+- **rapc 风险预检**：单类 64KB 代码段、单方法 20KB、全方法 try/catch 覆盖率、
+  StackMap 体积、解压总量 18/20MB、255 分片上限。
+- **大类自动拆分**：超过代码段上限的类调用 `patches/ClassSplit.class` 把方法搬到
+  同包 `jrsN` 兄弟类；游戏原包 bug 由 `GuardArrayPatcher` 兜底修复。
+- **COD 构建管线**：ProGuard `-microedition` 预验证 → class major 48 → 生成 JAD
+  → rapc；检测到 USB 设备时 `javaloader -u` 自动装机。
+- **批量扫描 / 批量转换**：目录递归扫描可上黑莓的 jar，逐项显示风险；批量转换
+  自动识别分辨率、防覆盖输出、同步 JAD，失败/跳过写入 `转换失败.txt`。
 
 ## 目录结构
 
 ```
-JarResizer.exe        主程序（GUI，双击即用）
-tools\                自带工具链：jre（运行时）、ecj.jar、proguard、rapc.jar、
-                      javaloader.exe、net_rim_*.cod、cldc/midp API jar、microemu
-assets\               预验证兼容层 class（Nokia shim、jr.file / jr.sensor / ...、ScaleCanvas）
-adapter\              ScaleCanvas 多指触摸层源码
-filestub\ 等各 stub\  对应兼容层源码 + 构建脚本
-patches\              字节码补丁源码（超大类拆分、数组越界防护）
-resizer.py 等         核心逻辑源码（exe 内已打包一份）
+Cargo.toml  Cargo.lock
+src\main.rs       入口与模块声明
+src\classfile.rs  Java class 常量池/成员/属性解析与回写
+src\bytecode.rs   线性字节码遍历（含 tableswitch/lookupswitch/wide）
+src\archive.rs    jar(zip) 读写（保留条目顺序，GBK 文件名解码）
+src\consts.rs     常量、预设分辨率、重命名规则、键位表
+src\patch.rs      AUTO 改写与 FIXED 常量补丁、原始字节补丁
+src\shim.rs       兼容层家族定义、扫描、注入与包重定位
+src\scan.rs       Canvas 层级、rapc 风险、原生分辨率、键位、完整性、批量扫描
+src\convert.rs    转换主流程与 JAD 更新
+src\cod.rs        COD 构建/安装管线（ProGuard/rapc/javaloader）
+src\batch.rs      批量转换与失败报告
+src\gui.rs        egui 界面（转换 / 批量扫描 / 帮助）
+assets\           预验证兼容层 class 与 ScaleCanvas（运行时读取，勿删）
+adapter\          ScaleCanvas 多指触摸层源码
+filestub\ jsecstub\ nokiashim\ sensorstub\ wmastub\   各兼容层源码与构建脚本
+patches\          ClassSplit / GuardArrayPatcher 源码与 asm.jar
+tools\            自带 JRE、ProGuard、rapc、javaloader、API jar 等（勿删）
 ```
-
-## 从源码运行 / 构建
-
-- 源码运行：`python gui.py`（Python 3.8+）
-- 重打 exe：`powershell -File build_exe.ps1`（需 PyInstaller）
-- 重建兼容层（需本机 JDK17，自带 jre 无 jar.exe）：
-  `build_adapter.ps1`、`filestub\build_filestub.ps1` 等同名脚本
 
 ## 已知限制
 
-- COD 解压总量 ≤ 约 20MB（255 分片硬限制，超出后 rapc 内部错误）
-- 单类字节码 ≤ 64KB（rapc 代码段 16 位偏移上限）
-- 全方法 try/catch 的重度混淆游戏可能无法通过 rapc 控制流验证
-- 模拟器（microemu）验证仅覆盖基础功能，MMAPI 等可选包行为以真机为准
+- 单个 class 的字节码 ≤ 64KB（rapc 代码段 16 位偏移上限）；超限类会尝试拆分，
+  仍失败时 rapc 可能报错。
+- COD 解压总量 ≤ 约 20MB（255 分片上限），超出后 rapc 内部错误。
+- 全方法 try/catch 的重度混淆游戏可能无法通过 rapc 控制流验证。
+- 真机行为（音频、短信、文件、传感器）以 BlackBerry 9930 为准；M3G 兼容层
+  资源未随仓库提供，游戏引用时才会报错。
+- 写出 jar 时文件名统一按 UTF-8 记录（读取支持 GBK），极老打包器的中文文件名
+  在个别工具中可能显示异常。
 
 ## 版权声明
 

@@ -1,0 +1,16 @@
+[package]
+name = "JarResizer"
+version = "2.0.0"
+edition = "2024"
+description = "J2ME jar -> BlackBerry 9930 screen/keyboard/COD converter"
+license = "MIT"
+
+[dependencies]
+eframe = "0.31"
+zip = "2.2"
+encoding_rs = "0.8"
+rfd = "0.18"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
